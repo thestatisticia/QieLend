@@ -96,6 +96,7 @@ function App() {
   const [provider, setProvider] = useState(null)
   const [walletBalance, setWalletBalance] = useState(0)
   const [availableToBorrowLive, setAvailableToBorrowLive] = useState(0)
+  const [qiePrice, setQiePrice] = useState(0.13) // Default fallback price
 
   // Simple client-side routing to reflect the active page in the URL
   useEffect(() => {
@@ -499,6 +500,32 @@ function App() {
     }
   }, [account, provider])
 
+  // Fetch QIE price from Oracle
+  const fetchQIEPrice = async () => {
+    try {
+      // getQIEPrice can handle null provider (creates its own)
+      const price = await contractUtils.getQIEPrice(provider)
+      setQiePrice(price)
+    } catch (err) {
+      console.error('Error fetching QIE price from Oracle:', err)
+      // Keep current price or fallback to 0.13
+      if (qiePrice === 0.13) {
+        // Only log if we haven't set a price yet
+        console.warn('Using fallback QIE price: 0.13')
+      }
+    }
+  }
+
+  // Fetch QIE price on mount and periodically
+  useEffect(() => {
+    fetchQIEPrice() // Fetch immediately
+    const interval = setInterval(() => {
+      fetchQIEPrice()
+    }, 60000) // Update every 60 seconds
+
+    return () => clearInterval(interval)
+  }, [provider]) // Re-fetch if provider changes
+
   const displayedHealthFactor = useMemo(() => {
     const raw = displayState.user.healthFactor
     // If supplied but no borrow, health factor is effectively very safe; show capped high value
@@ -772,7 +799,7 @@ function App() {
             <div className="stats-column">
               <div className="stat-item glass">
                 <div className="stat-label">Total market size®</div>
-                <div className="stat-value">${((displayState.totals.marketSize * 0.13) / 1000000).toFixed(1)}M+</div>
+                <div className="stat-value">${((displayState.totals.marketSize * qiePrice) / 1000000).toFixed(1)}M+</div>
               </div>
               <div className="stat-item glass">
                 <div className="stat-label">Total users®</div>
@@ -782,7 +809,7 @@ function App() {
             <div className="stats-column">
               <div className="stat-item glass">
                 <div className="stat-label">Total tx volume®</div>
-                <div className="stat-value">${((displayState.totals.borrow * 0.13) / 1000000).toFixed(1)}M+</div>
+                <div className="stat-value">${((displayState.totals.borrow * qiePrice) / 1000000).toFixed(1)}M+</div>
               </div>
               <div className="stat-item glass">
                 <div className="stat-label">Total chains®</div>
@@ -819,6 +846,21 @@ function App() {
             </div>
           </div>
         </section>
+
+        <footer className="app-footer">
+          <div className="footer-left">
+            <span>© 2025 QieLend All rights reserved</span>
+          </div>
+          <div className="footer-right">
+            <a href="https://t.me/qielend" target="_blank" rel="noopener noreferrer">Telegram</a>
+            <a href="https://twitter.com/qielend" target="_blank" rel="noopener noreferrer">X</a>
+            <a href="https://discord.gg/qielend" target="_blank" rel="noopener noreferrer">Discord</a>
+            <a href="https://github.com/thestatisticia/QieLend" target="_blank" rel="noopener noreferrer">GitHub</a>
+            <a href="https://github.com/thestatisticia/QieLend/blob/main/DOCS.md" target="_blank" rel="noopener noreferrer" className="docs-link">
+              <span>📖</span> Docs
+            </a>
+          </div>
+        </footer>
       </div>
     )
   }
@@ -901,17 +943,17 @@ function App() {
                   <div className="dashboard-metric-card">
                     <p className="label">MY SUPPLY BALANCE</p>
                     <h2>{displayState.user.supplied.toFixed(2)} QIE</h2>
-                    <p className="subtext">~${(displayState.user.supplied * 0.13).toFixed(2)} • NET APR {netApy.toFixed(2)}%</p>
+                    <p className="subtext">~${(displayState.user.supplied * qiePrice).toFixed(2)} • NET APR {netApy.toFixed(2)}%</p>
                   </div>
                   <div className="dashboard-metric-card">
                     <p className="label">AVAILABLE TO BORROW</p>
                     <h2>{(availableToBorrowLive || availableToBorrow || 0).toFixed(2)} QIE</h2>
-                    <p className="subtext">~${((availableToBorrowLive || availableToBorrow || 0) * 0.13).toFixed(2)}</p>
+                    <p className="subtext">~${((availableToBorrowLive || availableToBorrow || 0) * qiePrice).toFixed(2)}</p>
                   </div>
                   <div className="dashboard-metric-card">
                     <p className="label">TOTAL BORROW</p>
                     <h2>{displayState.user.borrowed.toFixed(2)} QIE</h2>
-                    <p className="subtext">~${(displayState.user.borrowed * 0.13).toFixed(2)}</p>
+                    <p className="subtext">~${(displayState.user.borrowed * qiePrice).toFixed(2)}</p>
                     <div className="progress-small">
                       <span
                         className="bar-small"
@@ -922,7 +964,7 @@ function App() {
                   <div className="dashboard-metric-card">
                     <p className="label">WALLET BALANCE</p>
                     <h2>{walletBalance.toFixed(2)} QIE</h2>
-                    <p className="subtext">~${(walletBalance * 0.13).toFixed(2)}</p>
+                    <p className="subtext">~${(walletBalance * qiePrice).toFixed(2)}</p>
                   </div>
                   <div className="dashboard-metric-card health-factor-card">
                     <p className="label">HEALTH FACTOR</p>
@@ -957,7 +999,7 @@ function App() {
                       <div>
                         <p className="label">Balance</p>
                         <p className="asset-apr">{displayState.user.supplied.toFixed(2)} QIE</p>
-                        <p className="subtext" style={{ fontSize: '0.75rem', opacity: 0.7 }}>~${(displayState.user.supplied * 0.13).toFixed(2)}</p>
+                        <p className="subtext" style={{ fontSize: '0.75rem', opacity: 0.7 }}>~${(displayState.user.supplied * qiePrice).toFixed(2)}</p>
                       </div>
                       <div>
                         <p className="label">Collateral</p>
@@ -975,7 +1017,7 @@ function App() {
                     <div className="section-footer">
                       {collateralEnabled ? (
                         <>
-                          <p>Available to borrow {(availableToBorrowLive || availableToBorrow || 0).toFixed(2)} QIE (~${((availableToBorrowLive || availableToBorrow || 0) * 0.13).toFixed(2)})</p>
+                          <p>Available to borrow {(availableToBorrowLive || availableToBorrow || 0).toFixed(2)} QIE (~${((availableToBorrowLive || availableToBorrow || 0) * qiePrice).toFixed(2)})</p>
                           <p>Collateral capacity {collateralMetrics.capacity.toFixed(2)} QIE</p>
                           <p>Collateral remaining {collateralMetrics.remaining.toFixed(2)} QIE</p>
                         </>
@@ -1003,7 +1045,7 @@ function App() {
                       <div>
                         <p className="label">Balance</p>
                         <p className="asset-apr">{displayState.user.borrowed.toFixed(2)} QIE</p>
-                        <p className="subtext" style={{ fontSize: '0.75rem', opacity: 0.7 }}>~${(displayState.user.borrowed * 0.13).toFixed(2)}</p>
+                        <p className="subtext" style={{ fontSize: '0.75rem', opacity: 0.7 }}>~${(displayState.user.borrowed * qiePrice).toFixed(2)}</p>
                       </div>
                       <div>
                         <p className="label">Health</p>
@@ -1187,16 +1229,16 @@ function App() {
           <div className="market-stats">
             <div className="market-stat">
               <p className="label">Total Market Size</p>
-              <h2>${(displayState.totals.marketSize * 0.13).toLocaleString('en-US', { maximumFractionDigits: 0 })}</h2>
+              <h2>${(displayState.totals.marketSize * qiePrice).toLocaleString('en-US', { maximumFractionDigits: 0 })}</h2>
             </div>
             <div className="market-stat">
               <p className="label">Total Supplied</p>
-              <h2>${(displayState.totals.supply * 0.13).toLocaleString('en-US', { maximumFractionDigits: 0 })}</h2>
+              <h2>${(displayState.totals.supply * qiePrice).toLocaleString('en-US', { maximumFractionDigits: 0 })}</h2>
             </div>
             <div className="market-stat">
               <p className="label">Total Borrowed</p>
               <h2>{displayState.totals.borrow.toLocaleString('en-US', { maximumFractionDigits: 4 })} QIE</h2>
-              <p className="subtext" style={{ fontSize: '0.875rem', opacity: 0.7 }}>~${(displayState.totals.borrow * 0.13).toLocaleString('en-US', { maximumFractionDigits: 0 })}</p>
+              <p className="subtext" style={{ fontSize: '0.875rem', opacity: 0.7 }}>~${(displayState.totals.borrow * qiePrice).toLocaleString('en-US', { maximumFractionDigits: 0 })}</p>
             </div>
             <div className="market-stat">
               <p className="label">Supply APY</p>
@@ -1232,7 +1274,7 @@ function App() {
                       <span>QIE</span>
                       <div className="summary-value">
                         <strong>{walletBalance.toFixed(2)} QIE</strong>
-                        <span className="summary-usd">~${(walletBalance * 0.13).toFixed(2)}</span>
+                        <span className="summary-usd">~${(walletBalance * qiePrice).toFixed(2)}</span>
                       </div>
                     </div>
                   </div>
@@ -1243,7 +1285,7 @@ function App() {
                       <span>QIE Supplied</span>
                       <div className="summary-value">
                         <strong>{displayState.user.supplied.toFixed(2)} QIE</strong>
-                        <span className="summary-usd">~${(displayState.user.supplied * 0.13).toFixed(2)}</span>
+                        <span className="summary-usd">~${(displayState.user.supplied * qiePrice).toFixed(2)}</span>
                       </div>
                     </div>
                     <div className="summary-row">
@@ -1262,7 +1304,7 @@ function App() {
                       <span>QIE Borrowed</span>
                       <div className="summary-value">
                         <strong>{displayState.user.borrowed.toFixed(2)} QIE</strong>
-                        <span className="summary-usd">~${(displayState.user.borrowed * 0.13).toFixed(2)}</span>
+                        <span className="summary-usd">~${(displayState.user.borrowed * qiePrice).toFixed(2)}</span>
                       </div>
                     </div>
                     <div className="summary-row">
@@ -1275,13 +1317,13 @@ function App() {
                     <h4 className="summary-section-title">Overview</h4>
                     <div className="summary-row">
                       <span>Total Value</span>
-                      <strong>${((walletBalance + displayState.user.supplied - displayState.user.borrowed) * 0.13).toFixed(2)}</strong>
+                      <strong>${((walletBalance + displayState.user.supplied - displayState.user.borrowed) * qiePrice).toFixed(2)}</strong>
                     </div>
                     <div className="summary-row">
                       <span>Available to Borrow</span>
                       <div className="summary-value">
                         <strong>{(availableToBorrowLive || availableToBorrow || 0).toFixed(2)} QIE</strong>
-                        <span className="summary-usd">~${((availableToBorrowLive || availableToBorrow || 0) * 0.13).toFixed(2)}</span>
+                        <span className="summary-usd">~${((availableToBorrowLive || availableToBorrow || 0) * qiePrice).toFixed(2)}</span>
                       </div>
                     </div>
                     <div className="summary-row">
@@ -1337,6 +1379,21 @@ function App() {
           </div>
         </section>
       )}
+
+      <footer className="app-footer">
+        <div className="footer-left">
+          <span>© 2025 QieLend All rights reserved</span>
+        </div>
+        <div className="footer-right">
+          <a href="https://t.me/qielend" target="_blank" rel="noopener noreferrer">Telegram</a>
+          <a href="https://twitter.com/qielend" target="_blank" rel="noopener noreferrer">X</a>
+          <a href="https://discord.gg/qielend" target="_blank" rel="noopener noreferrer">Discord</a>
+          <a href="https://github.com/thestatisticia/QieLend" target="_blank" rel="noopener noreferrer">GitHub</a>
+          <a href="/DOCS.md" target="_blank" rel="noopener noreferrer" className="docs-link">
+            <span>📖</span> Docs
+          </a>
+        </div>
+      </footer>
     </div>
   )
 }

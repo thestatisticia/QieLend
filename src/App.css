@@ -1702,3 +1702,62 @@ button:hover:not(:disabled) {
     padding: 24px;
   }
 }
+
+/* Footer Styles */
+.app-footer {
+  width: 100%;
+  padding: 24px 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #0a0a0a;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin-top: auto;
+}
+
+.footer-left {
+  color: #fff;
+  font-size: 0.875rem;
+}
+
+.footer-right {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.footer-right a {
+  color: #fff;
+  text-decoration: none;
+  font-size: 0.875rem;
+  transition: opacity 0.2s;
+}
+
+.footer-right a:hover {
+  opacity: 0.7;
+}
+
+.footer-right .docs-link {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.footer-right .docs-link span {
+  font-size: 1rem;
+}
+
+@media (max-width: 768px) {
+  .app-footer {
+    flex-direction: column;
+    gap: 16px;
+    padding: 20px 24px;
+    text-align: center;
+  }
+
+  .footer-right {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 16px;
+  }
+}
