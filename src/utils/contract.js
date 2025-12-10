@@ -6,10 +6,36 @@ import PointsCalculatorABI from '../contracts/PointsCalculatorABI.json';
 const CONTRACT_ADDRESS = import.meta.env.VITE_QIE_CONTRACT_ADDRESS || '0x0000000000000000000000000000000000000000';
 const POINTS_CONTRACT_ADDRESS = import.meta.env.VITE_POINTS_CALCULATOR_ADDRESS || '0x0000000000000000000000000000000000000000';
 
+// ============================================================================
+// ORACLE CONTRACT ADDRESSES
+// ============================================================================
 // QIE Oracle contract address (can be overridden via environment variable)
 // Uses Chainlink AggregatorV3Interface
 // QIE/USDT price feed address on QIE Mainnet
 const QIE_ORACLE_ADDRESS = import.meta.env.VITE_QIE_ORACLE_ADDRESS || '0x3Bc617cF3A4Bb77003e4c556B87b13D556903D17';
+
+// Token Oracle addresses (Chainlink AggregatorV3Interface compatible)
+// These can be overridden via environment variables in .env file
+const TOKEN_ORACLES = {
+  // Bitcoin (BTC) Oracle Address
+  BTC: import.meta.env.VITE_BTC_ORACLE_ADDRESS || '0x9E596d809a20A272c788726f592c0d1629755440',
+  
+  // Ethereum (ETH) Oracle Address
+  ETH: import.meta.env.VITE_ETH_ORACLE_ADDRESS || '0x4bb7012Fbc79fE4Ae9B664228977b442b385500d',
+  
+  // Ripple (XRP) Oracle Address
+  XRP: import.meta.env.VITE_XRP_ORACLE_ADDRESS || '0x804582B1f8Fea73919e7c737115009f668f97528',
+  
+  // Solana (SOL) Oracle Address
+  SOL: import.meta.env.VITE_SOL_ORACLE_ADDRESS || '0xe86999c8e6C8eeF71bebd35286bCa674E0AD7b21',
+  
+  // Binance Coin (BNB) Oracle Address
+  BNB: import.meta.env.VITE_BNB_ORACLE_ADDRESS || '0x775A56117Fdb8b31877E75Ceeb68C96765b031e6',
+  
+  // Tether Gold (XAUt) Oracle Address
+  XAUt: import.meta.env.VITE_XAUT_ORACLE_ADDRESS || '0x9aD0199a67588ee293187d26bA1BE61cb07A214c',
+};
+// ============================================================================
 const QIE_ORACLE_ABI = [
   {
     inputs: [],
@@ -80,15 +106,60 @@ const getRawProvider = (provider) => {
 export async function getContractWithSigner(provider, accountAddress = null) {
   const ethersProvider = ensureEthersProvider(provider);
 
-  // For QIE Wallet: create JsonRpcSigner directly (synchronous, no validation/prompts)
+  // For QIE Wallet: verify provider's current account matches expected address
   if (accountAddress) {
-    // Create signer synchronously - no async calls, no validation, no prompts
-    const signer = new ethers.JsonRpcSigner(ethersProvider, accountAddress);
-    return new ethers.Contract(CONTRACT_ADDRESS, QieLendNativeABI, signer);
+    // Normalize address to lowercase
+    const normalizedAddress = accountAddress.toLowerCase();
+    
+    // First, check what account the provider is currently using
+    try {
+      const currentSigner = await ethersProvider.getSigner();
+      const currentAddress = await currentSigner.getAddress();
+      const currentAddressLower = currentAddress.toLowerCase();
+      
+      console.log('Provider current account:', currentAddressLower, 'Expected:', normalizedAddress);
+      
+      // If the provider's current account doesn't match, we have a problem
+      if (currentAddressLower !== normalizedAddress) {
+        console.error('Provider account mismatch!', {
+          providerAccount: currentAddressLower,
+          expectedAccount: normalizedAddress
+        });
+        throw new Error(
+          `Wallet account mismatch: Your wallet is using account ${currentAddressLower}, but the app expects ${normalizedAddress}. ` +
+          `Please switch to the correct account in your wallet or reconnect with the expected account.`
+        );
+      }
+      
+      // Account matches, use the current signer
+      console.log('Account verified, using signer for:', currentAddressLower);
+      return new ethers.Contract(CONTRACT_ADDRESS, QieLendNativeABI, currentSigner);
+    } catch (error) {
+      // If getSigner/getAddress fails, try JsonRpcSigner as fallback
+      console.warn('Failed to verify provider account, trying JsonRpcSigner fallback:', error);
+      
+      // If it's our custom error about account mismatch, re-throw it
+      if (error.message.includes('Wallet account mismatch')) {
+        throw error;
+      }
+      
+      // Otherwise, try JsonRpcSigner (but this might still have the same issue)
+      try {
+        const fallbackSigner = new ethers.JsonRpcSigner(ethersProvider, normalizedAddress);
+        console.warn('Using JsonRpcSigner fallback - transaction may be sent from wrong account!');
+        return new ethers.Contract(CONTRACT_ADDRESS, QieLendNativeABI, fallbackSigner);
+      } catch (fallbackError) {
+        console.error('Both signer methods failed:', fallbackError);
+        throw new Error(
+          `Failed to get signer for address ${normalizedAddress}. ` +
+          `Please ensure your wallet is connected with account ${normalizedAddress}. ` +
+          `Error: ${fallbackError.message}`
+        );
+      }
+    }
   }
 
   // For MetaMask: try default signer (no prompts if already connected)
-  // Don't validate with getAddress() - that can cause prompts
   const signer = await ethersProvider.getSigner();
   return new ethers.Contract(CONTRACT_ADDRESS, QieLendNativeABI, signer);
 }
@@ -134,9 +205,56 @@ export async function withdraw(provider, amount, accountAddress = null) {
  * Borrow QIE tokens
  */
 export async function borrow(provider, amount, accountAddress = null) {
+  if (!accountAddress) {
+    throw new Error('Account address is required for borrow transactions');
+  }
+  
+  const expectedAddress = accountAddress.toLowerCase();
+  console.log('Borrow: Expected account address:', expectedAddress);
+  
+  // Verify the signer's address before sending transaction
   const contract = await getContractWithSigner(provider, accountAddress);
+  
+  // Get the signer from the contract and verify its address
+  const signer = contract.runner;
+  if (!signer) {
+    throw new Error('Contract signer is not available');
+  }
+  
+  const signerAddress = await signer.getAddress();
+  const signerAddressLower = signerAddress.toLowerCase();
+  
+  console.log('Borrow: Signer address:', signerAddressLower);
+  
+  if (signerAddressLower !== expectedAddress) {
+    const errorMsg = 
+      `CRITICAL: Transaction will be sent from wrong account!\n\n` +
+      `Expected account: ${expectedAddress}\n` +
+      `Actual signer: ${signerAddressLower}\n\n` +
+      `The borrowed funds will be sent to ${signerAddressLower}, not ${expectedAddress}.\n\n` +
+      `Please:\n` +
+      `1. Switch to account ${expectedAddress} in your QIE Wallet\n` +
+      `2. Disconnect and reconnect your wallet\n` +
+      `3. Try the transaction again`;
+    
+    console.error(errorMsg);
+    throw new Error(errorMsg);
+  }
+  
+  console.log('Borrow: Signer verified, sending transaction from:', signerAddressLower);
   const tx = await contract.borrow(ethers.parseEther(amount.toString()));
-  return await tx.wait();
+  
+  // After transaction, verify the receipt to confirm it was sent from the correct address
+  const receipt = await tx.wait();
+  if (receipt.from.toLowerCase() !== expectedAddress) {
+    console.error('Transaction receipt shows wrong sender!', {
+      expected: expectedAddress,
+      actual: receipt.from.toLowerCase()
+    });
+    // Don't throw here as transaction already succeeded, but log the issue
+  }
+  
+  return receipt;
 }
 
 /**
@@ -391,5 +509,78 @@ export async function getQIEPrice(provider = null) {
     console.error('Error fetching QIE price from Oracle:', error);
     // Return fallback price
     return 0.13;
+  }
+}
+
+/**
+ * Get token price from Oracle (Chainlink AggregatorV3Interface compatible)
+ * Returns price in USD
+ * @param {string} tokenSymbol - Token symbol (SOL, ETH, BTC, XRP, BNB)
+ * @param {Object} provider - Optional ethers provider
+ */
+export async function getTokenPrice(tokenSymbol, provider = null) {
+  const oracleAddress = TOKEN_ORACLES[tokenSymbol];
+  if (!oracleAddress || oracleAddress === '0x0000000000000000000000000000000000000000') {
+    console.warn(`No oracle address configured for ${tokenSymbol}`);
+    return null;
+  }
+
+  try {
+    let ethersProvider;
+    
+    if (provider) {
+      try {
+        ethersProvider = ensureEthersProvider(provider);
+      } catch (e) {
+        ethersProvider = new ethers.JsonRpcProvider('https://rpc1mainnet.qie.digital/');
+      }
+    } else {
+      ethersProvider = new ethers.JsonRpcProvider('https://rpc1mainnet.qie.digital/');
+    }
+    
+    const code = await ethersProvider.getCode(oracleAddress);
+    if (code === '0x' || code === '0x0') {
+      console.warn(`${tokenSymbol} Oracle contract not found at address:`, oracleAddress);
+      return null;
+    }
+    
+    const oracleContract = new ethers.Contract(oracleAddress, QIE_ORACLE_ABI, ethersProvider);
+    const roundData = await oracleContract.latestRoundData();
+    
+    const answer = roundData[1];
+    const updatedAt = roundData[3];
+    
+    if (!answer || answer.toString() === '0') {
+      console.warn(`${tokenSymbol} Oracle returned zero answer`);
+      return null;
+    }
+    
+    const currentTime = Math.floor(Date.now() / 1000);
+    const stalenessThreshold = 3600;
+    if (updatedAt && currentTime - Number(updatedAt.toString()) > stalenessThreshold) {
+      console.warn(`${tokenSymbol} Oracle data is stale`);
+    }
+    
+    let decimals = 8;
+    try {
+      decimals = Number(await oracleContract.decimals());
+    } catch (err) {
+      console.warn(`Could not fetch decimals from ${tokenSymbol} Oracle, using default 8`);
+    }
+    
+    const answerBigInt = BigInt(answer.toString());
+    const answerAbs = answerBigInt < 0n ? -answerBigInt : answerBigInt;
+    const price = Number(answerAbs) / Math.pow(10, decimals);
+    
+    if (price < 0.001 || price > 1000000) {
+      console.warn(`${tokenSymbol} Oracle returned unreasonable price: ${price} USD`);
+      return null;
+    }
+    
+    console.log(`${tokenSymbol} Price from Oracle: $${price.toFixed(4)}`);
+    return price;
+  } catch (error) {
+    console.error(`Error fetching ${tokenSymbol} price from Oracle:`, error);
+    return null;
   }
 }

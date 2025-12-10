@@ -75,6 +75,73 @@ const formatAddress = (address) => {
   return `${address.slice(0, 6)}...${address.slice(-4)}`
 }
 
+// Leaderboard localStorage helpers
+const LEADERBOARD_STORAGE_KEY = 'qielend_leaderboard'
+
+const getLeaderboardFromStorage = () => {
+  try {
+    const stored = localStorage.getItem(LEADERBOARD_STORAGE_KEY)
+    return stored ? JSON.parse(stored) : {}
+  } catch (e) {
+    console.error('Error reading leaderboard from storage:', e)
+    return {}
+  }
+}
+
+const saveLeaderboardToStorage = (leaderboard) => {
+  try {
+    localStorage.setItem(LEADERBOARD_STORAGE_KEY, JSON.stringify(leaderboard))
+  } catch (e) {
+    console.error('Error saving leaderboard to storage:', e)
+  }
+}
+
+const initializeWalletInLeaderboard = (address) => {
+  if (!address) return
+  const leaderboard = getLeaderboardFromStorage()
+  const normalizedAddress = address.toLowerCase()
+  if (!leaderboard[normalizedAddress]) {
+    leaderboard[normalizedAddress] = { address: normalizedAddress, points: 0 }
+    saveLeaderboardToStorage(leaderboard)
+    console.log('Initialized wallet in leaderboard with 0 points:', normalizedAddress)
+  }
+}
+
+const updateWalletPoints = (address, points) => {
+  if (!address) return
+  const leaderboard = getLeaderboardFromStorage()
+  const normalizedAddress = address.toLowerCase()
+  leaderboard[normalizedAddress] = { address: normalizedAddress, points: Math.max(0, points) }
+  saveLeaderboardToStorage(leaderboard)
+  console.log('Updated wallet points in leaderboard:', normalizedAddress, points)
+}
+
+// Transaction count tracking
+const TRANSACTION_COUNT_STORAGE_KEY = 'qielend_transaction_count'
+
+const getTransactionCount = () => {
+  try {
+    const stored = localStorage.getItem(TRANSACTION_COUNT_STORAGE_KEY)
+    return stored ? parseInt(stored, 10) : 0
+  } catch (e) {
+    console.error('Error reading transaction count from storage:', e)
+    return 0
+  }
+}
+
+const incrementTransactionCount = () => {
+  try {
+    const currentCount = getTransactionCount()
+    const newCount = currentCount + 1
+    localStorage.setItem(TRANSACTION_COUNT_STORAGE_KEY, newCount.toString())
+    console.log('Transaction count incremented:', newCount)
+    return newCount
+  } catch (e) {
+    console.error('Error incrementing transaction count:', e)
+    return getTransactionCount()
+  }
+}
+
 function App() {
   const [supplyAmount, setSupplyAmount] = useState('')
   const [borrowAmount, setBorrowAmount] = useState('')
@@ -97,11 +164,24 @@ function App() {
   const [walletBalance, setWalletBalance] = useState(0)
   const [availableToBorrowLive, setAvailableToBorrowLive] = useState(0)
   const [qiePrice, setQiePrice] = useState(0.13) // Default fallback price
+  const [landingStats, setLandingStats] = useState({
+    marketSize: 0,
+    totalVolume: 0,
+    totalUsers: 0,
+    totalTransactions: 0
+  })
+  const [tokenPrices, setTokenPrices] = useState({
+    SOL: null,
+    ETH: null,
+    BTC: null,
+    XRP: null,
+    BNB: null
+  })
 
   // Simple client-side routing to reflect the active page in the URL
   useEffect(() => {
     const path = window.location.pathname.replace('/', '') || 'landing'
-    const validPages = ['landing', 'dashboard', 'portfolio', 'market', 'points']
+    const validPages = ['landing', 'dashboard', 'portfolio', 'overview', 'market', 'points']
     setActivePage(validPages.includes(path) ? path : 'landing')
 
     const handlePopState = () => {
@@ -125,12 +205,53 @@ function App() {
     // Check if already connected
     const mm = detectMetaMaskProvider()
     if (mm) {
-      mm.request({ method: 'eth_accounts' }).then((accounts) => {
+      mm.request({ method: 'eth_accounts' }).then(async (accounts) => {
         if (accounts.length > 0) {
-          const existingProvider = new ethers.BrowserProvider(mm)
-          setProvider(existingProvider)
-          setAccount(accounts[0])
-          setWallet('metamask')
+          try {
+            // Verify we're on the correct network
+            const existingProvider = new ethers.BrowserProvider(mm)
+            const network = await existingProvider.getNetwork()
+            
+            // If not on QIE Mainnet, try to switch
+            if (network.chainId !== BigInt(1990)) {
+              console.log('Auto-connect: Not on QIE Mainnet, attempting to switch...')
+              try {
+                await mm.request({
+                  method: 'wallet_switchEthereumChain',
+                  params: [{ chainId: QIE_NETWORK.chainId }],
+                })
+                // Wait for switch
+                await new Promise(resolve => setTimeout(resolve, 500))
+              } catch (switchError) {
+                if (switchError.code === 4902) {
+                  await mm.request({
+                    method: 'wallet_addEthereumChain',
+                    params: [QIE_NETWORK],
+                  })
+                  await new Promise(resolve => setTimeout(resolve, 500))
+                }
+              }
+            }
+            
+            // Create provider after network switch
+            const provider = new ethers.BrowserProvider(mm)
+            setProvider(provider)
+            const autoConnectedAccount = accounts[0]
+            setAccount(autoConnectedAccount)
+            // Initialize wallet in leaderboard if not already present
+            initializeWalletInLeaderboard(autoConnectedAccount)
+            setWallet('metamask')
+            
+            // Fetch data after auto-connect
+            if (CONTRACT_ADDRESS !== '0x0000000000000000000000000000000000000000') {
+              setTimeout(() => {
+                fetchContractData()
+                fetchWalletBalance()
+              }, 1000)
+            }
+          } catch (error) {
+            console.error('Error during auto-connect:', error)
+          }
         }
       })
     }
@@ -148,6 +269,17 @@ function App() {
     
     setIsLoadingContract(true)
     try {
+      // Verify network before fetching data
+      try {
+        const network = await provider.getNetwork()
+        console.log('Fetching contract data on network:', network, 'for account:', account)
+        if (network.chainId !== BigInt(1990)) {
+          console.warn('Warning: Not on QIE Mainnet (Chain ID 1990). Current:', network.chainId.toString())
+        }
+      } catch (netErr) {
+        console.error('Error checking network:', netErr)
+      }
+      
       // Fetch user account first to avoid divide-by-zero paths for empty accounts
       const userAccount = await contractUtils.getUserAccount(provider, account)
 
@@ -269,6 +401,11 @@ function App() {
       setCollateralEnabled(userAccount.collateralEnabled)
       setRewards(accruedRewards || 0)
       setPoints(calculatedPoints)
+      // Update points in leaderboard immediately
+      if (account) {
+        updateWalletPoints(account, calculatedPoints)
+        console.log('Updated points in leaderboard for', account, ':', calculatedPoints)
+      }
       await fetchWalletBalance()
     } catch (error) {
       console.error('Error fetching contract data:', error)
@@ -277,6 +414,77 @@ function App() {
       setIsLoadingContract(false)
     }
   }
+
+  // Fetch landing page stats from contract
+  useEffect(() => {
+    const fetchLandingStats = async () => {
+      if (CONTRACT_ADDRESS === '0x0000000000000000000000000000000000000000') {
+        console.warn('Contract address not configured:', CONTRACT_ADDRESS)
+        // Still show transaction count and users even if contract not configured
+        const totalTransactions = getTransactionCount()
+        const leaderboard = getLeaderboardFromStorage()
+        const totalUsers = Object.keys(leaderboard).length || 1
+        setLandingStats(prev => ({
+          ...prev,
+          totalUsers: totalUsers,
+          totalTransactions: totalTransactions
+        }))
+        return
+      }
+      
+      try {
+        // Create a provider for contract calls (no wallet needed)
+        const rpcProvider = new ethers.JsonRpcProvider('https://rpc1mainnet.qie.digital/')
+        console.log('Fetching protocol totals from contract:', CONTRACT_ADDRESS)
+        
+        // Check if contract has code
+        const code = await rpcProvider.getCode(CONTRACT_ADDRESS)
+        if (!code || code === '0x' || code === '0x0') {
+          console.error('Contract has no code at address:', CONTRACT_ADDRESS)
+          throw new Error('Contract not deployed at this address')
+        }
+        
+        const protocolTotals = await contractUtils.getProtocolTotals(rpcProvider)
+        console.log('Protocol totals fetched:', protocolTotals)
+        
+        // Count unique users from leaderboard
+        const leaderboard = getLeaderboardFromStorage()
+        const totalUsers = Object.keys(leaderboard).length || 1
+        
+        // Get transaction count from localStorage (actual number of transactions)
+        const totalTransactions = getTransactionCount()
+        
+        console.log('Setting landing stats:', {
+          marketSize: protocolTotals.supply || 0,
+          totalTransactions,
+          totalUsers
+        })
+        
+        setLandingStats({
+          marketSize: protocolTotals.supply || 0,
+          totalVolume: protocolTotals.borrow || 0,
+          totalUsers: totalUsers,
+          totalTransactions: totalTransactions
+        })
+      } catch (error) {
+        console.error('Error fetching landing stats:', error)
+        // Keep default values on error, but still show transaction count and users
+        const totalTransactions = getTransactionCount()
+        const leaderboard = getLeaderboardFromStorage()
+        const totalUsers = Object.keys(leaderboard).length || 1
+        setLandingStats(prev => ({
+          ...prev,
+          totalUsers: totalUsers,
+          totalTransactions: totalTransactions
+        }))
+      }
+    }
+    
+    fetchLandingStats()
+    // Refresh stats every 30 seconds (more frequent for debugging)
+    const interval = setInterval(fetchLandingStats, 30000)
+    return () => clearInterval(interval)
+  }, [])
 
   // Update rewards in real-time
   useEffect(() => {
@@ -308,16 +516,19 @@ function App() {
 
     setIsConnecting(true)
     try {
-      const newProvider = new ethers.BrowserProvider(mm)
-      setProvider(newProvider)
-      const accounts = await newProvider.send('eth_requestAccounts', [])
+      // Request accounts first
+      const accounts = await mm.request({ method: 'eth_requestAccounts' })
+      if (!accounts || accounts.length === 0) {
+        throw new Error('No accounts returned from MetaMask')
+      }
       
-      // Switch to QIE Mainnet
+      // Switch to QIE Mainnet BEFORE creating provider
       try {
         await mm.request({
           method: 'wallet_switchEthereumChain',
           params: [{ chainId: QIE_NETWORK.chainId }],
         })
+        console.log('Switched to QIE Mainnet')
       } catch (switchError) {
         // Chain doesn't exist, add it
         if (switchError.code === 4902) {
@@ -325,15 +536,44 @@ function App() {
             method: 'wallet_addEthereumChain',
             params: [QIE_NETWORK],
           })
+          console.log('Added QIE Mainnet to MetaMask')
+        } else {
+          console.error('Error switching chain:', switchError)
+          throw switchError
         }
       }
-
-      setAccount(accounts[0])
+      
+      // Wait a bit for chain switch to complete
+      await new Promise(resolve => setTimeout(resolve, 500))
+      
+      // Create provider AFTER chain switch
+      const newProvider = new ethers.BrowserProvider(mm)
+      
+      // Verify we're on the correct network
+      const network = await newProvider.getNetwork()
+      console.log('Connected network:', network)
+      if (network.chainId !== BigInt(1990)) {
+        console.warn('Warning: Not on QIE Mainnet. Chain ID:', network.chainId)
+      }
+      
+      setProvider(newProvider)
+      const connectedAccount = accounts[0]
+      setAccount(connectedAccount)
       setWallet('metamask')
       setShowWalletMenu(false)
+      // Initialize wallet in leaderboard with 0 points
+      initializeWalletInLeaderboard(connectedAccount)
+      
+      // Fetch data immediately after connection
+      if (CONTRACT_ADDRESS !== '0x0000000000000000000000000000000000000000') {
+        setTimeout(() => {
+          fetchContractData()
+          fetchWalletBalance()
+        }, 1000)
+      }
     } catch (error) {
       console.error('Error connecting MetaMask:', error)
-      alert('Failed to connect MetaMask. Please try again.')
+      alert(`Failed to connect MetaMask: ${error.message || 'Please try again.'}`)
     } finally {
       setIsConnecting(false)
     }
@@ -351,9 +591,12 @@ function App() {
       const newProvider = new ethers.BrowserProvider(qie)
       setProvider(newProvider)
       const accounts = await qie.request({ method: 'eth_requestAccounts' })
-      setAccount(accounts[0])
+      const connectedAccount = accounts[0]
+      setAccount(connectedAccount)
       setWallet('qiewallet')
       setShowWalletMenu(false)
+      // Initialize wallet in leaderboard with 0 points
+      initializeWalletInLeaderboard(connectedAccount)
     } catch (error) {
       console.error('Error connecting QIE Wallet:', error)
       alert('Failed to connect QIE Wallet. Please try again.')
@@ -410,21 +653,54 @@ function App() {
   }, [contractData, points])
 
   const computedLeaderboard = useMemo(() => {
-    const leaderboard = account
-      ? [
-          {
-            address: formatAddress(account),
-            points: Math.max(displayPoints, 0),
-          },
-        ]
-      : []
-    return leaderboard
+    // Load all wallets from localStorage
+    const storedLeaderboard = getLeaderboardFromStorage()
+    const leaderboardArray = Object.values(storedLeaderboard).map(entry => ({
+      address: formatAddress(entry.address),
+      points: Math.max(entry.points || 0, 0),
+      fullAddress: entry.address
+    }))
+    
+    // If current account is connected, ensure it's in the leaderboard with current points
+    if (account) {
+      const normalizedAccount = account.toLowerCase()
+      const existingIndex = leaderboardArray.findIndex(entry => entry.fullAddress === normalizedAccount)
+      const currentPoints = Math.max(displayPoints, 0)
+      
+      console.log('Leaderboard computation:', {
+        account: normalizedAccount,
+        displayPoints,
+        currentPoints,
+        existingIndex,
+        storedPoints: existingIndex >= 0 ? leaderboardArray[existingIndex].points : 'not found'
+      })
+      
+      if (existingIndex >= 0) {
+        // Update existing entry with current points (always use latest)
+        leaderboardArray[existingIndex].points = currentPoints
+        // Also update in localStorage to keep it in sync
+        updateWalletPoints(account, currentPoints)
+      } else {
+        // Add current account if not in leaderboard
+        leaderboardArray.push({
+          address: formatAddress(account),
+          points: currentPoints,
+          fullAddress: normalizedAccount
+        })
+        // Initialize in localStorage
+        initializeWalletInLeaderboard(account)
+        updateWalletPoints(account, currentPoints)
+      }
+    }
+    
+    return leaderboardArray
       .sort((a, b) => b.points - a.points)
       .map((entry, idx) => ({
-        ...entry,
+        address: entry.address,
+        points: entry.points,
         rank: idx + 1,
       }))
-  }, [account, points])
+  }, [account, displayPoints])
 
   const availableToBorrow = useMemo(() => {
     if (account && contractData) {
@@ -479,10 +755,28 @@ function App() {
       return
     }
     try {
-      const balance = await provider.getBalance(account)
-      setWalletBalance(parseFloat(ethers.formatEther(balance)))
+      // Ensure provider is properly set up
+      const ethersProvider = provider
+      if (!ethersProvider) {
+        console.error('Provider is null')
+        setWalletBalance(0)
+        return
+      }
+      
+      // Get balance with proper error handling
+      const balance = await ethersProvider.getBalance(account)
+      const balanceFormatted = parseFloat(ethers.formatEther(balance))
+      console.log('Wallet balance fetched:', balanceFormatted, 'QIE for account:', account)
+      setWalletBalance(balanceFormatted)
     } catch (err) {
-      console.error('Error fetching wallet balance', err)
+      console.error('Error fetching wallet balance:', err)
+      // Try to get network info for debugging
+      try {
+        const network = await provider.getNetwork()
+        console.log('Current network:', network)
+      } catch (netErr) {
+        console.error('Error getting network:', netErr)
+      }
       setWalletBalance(0)
     }
   }
@@ -526,6 +820,30 @@ function App() {
     return () => clearInterval(interval)
   }, [provider]) // Re-fetch if provider changes
 
+  // Fetch token prices from oracles
+  useEffect(() => {
+    const fetchTokenPrices = async () => {
+      const prices = {}
+      const tokens = ['SOL', 'ETH', 'BTC', 'XRP', 'BNB']
+      
+      for (const token of tokens) {
+        try {
+          const price = await contractUtils.getTokenPrice(token, provider)
+          prices[token] = price
+        } catch (error) {
+          console.error(`Error fetching ${token} price:`, error)
+          prices[token] = null
+        }
+      }
+      
+      setTokenPrices(prev => ({ ...prev, ...prices }))
+    }
+    
+    fetchTokenPrices()
+    const interval = setInterval(fetchTokenPrices, 60000) // Update every 60 seconds
+    return () => clearInterval(interval)
+  }, [provider])
+
   const displayedHealthFactor = useMemo(() => {
     const raw = displayState.user.healthFactor
     // If supplied but no borrow, health factor is effectively very safe; show capped high value
@@ -563,12 +881,39 @@ function App() {
   const handleSupply = async () => {
     if (!account || !provider || !supplyAmount || parseFloat(supplyAmount) <= 0) return
     
+    // Check if collateral was previously enabled
+    const wasCollateralEnabled = collateralEnabled
+    
     try {
       await contractUtils.supply(provider, supplyAmount, account)
+      // Increment transaction count
+      incrementTransactionCount()
       setSupplyAmount('')
       // Wait a bit for the transaction to be confirmed on-chain
       await new Promise(resolve => setTimeout(resolve, 2000))
+      
+      // If collateral was enabled before, enable it for the new supply
+      if (wasCollateralEnabled) {
+        try {
+          await contractUtils.setCollateralEnabled(provider, true, account)
+          console.log('Collateral automatically enabled for new supply')
+        } catch (collateralError) {
+          console.error('Error enabling collateral after supply:', collateralError)
+          // Don't fail the whole operation if collateral enable fails
+        }
+      }
+      
       await fetchContractData()
+      
+      // Update available to borrow after supply
+      try {
+        const available = await contractUtils.getAvailableToBorrow(provider, account)
+        setAvailableToBorrowLive(available || 0)
+        console.log('Available to borrow updated after supply:', available)
+      } catch (e) {
+        console.error('Error updating availableToBorrow after supply:', e)
+      }
+      
       // Explicitly recalculate points after data fetch
       if (POINTS_CONTRACT_ADDRESS !== '0x0000000000000000000000000000000000000000') {
         try {
@@ -578,6 +923,7 @@ function App() {
           ])
           const newPoints = await contractUtils.calculatePoints(provider, supplyBal, borrowBal)
           setPoints(newPoints)
+          updateWalletPoints(account, newPoints)
           console.log('Points updated after supply:', newPoints)
         } catch (err) {
           console.error('Error updating points after supply:', err)
@@ -610,6 +956,8 @@ function App() {
     try {
       const tx = await contractUtils.withdraw(provider, withdrawAmount, account)
       console.log('Withdraw transaction sent:', tx)
+      // Increment transaction count
+      incrementTransactionCount()
       setWithdrawAmount('')
       // Wait a bit for the transaction to be confirmed on-chain
       await new Promise(resolve => setTimeout(resolve, 2000))
@@ -623,6 +971,7 @@ function App() {
           ])
           const newPoints = await contractUtils.calculatePoints(provider, supplyBal, borrowBal)
           setPoints(newPoints)
+          updateWalletPoints(account, newPoints)
           console.log('Points updated after withdraw:', newPoints)
         } catch (err) {
           console.error('Error updating points after withdraw:', err)
@@ -684,6 +1033,8 @@ function App() {
     
     try {
       await contractUtils.borrow(provider, borrowAmount, account)
+      // Increment transaction count
+      incrementTransactionCount()
       setBorrowAmount('')
       // Wait a bit for the transaction to be confirmed on-chain
       await new Promise(resolve => setTimeout(resolve, 2000))
@@ -697,6 +1048,7 @@ function App() {
           ])
           const newPoints = await contractUtils.calculatePoints(provider, supplyBal, borrowBal)
           setPoints(newPoints)
+          updateWalletPoints(account, newPoints)
           console.log('Points updated after borrow:', newPoints)
         } catch (err) {
           console.error('Error updating points after borrow:', err)
@@ -739,6 +1091,8 @@ function App() {
     
     try {
       await contractUtils.repay(provider, repayAmount, account)
+      // Increment transaction count
+      incrementTransactionCount()
       setRepayAmount('')
       // Wait a bit for the transaction to be confirmed on-chain
       await new Promise(resolve => setTimeout(resolve, 2000))
@@ -752,6 +1106,7 @@ function App() {
           ])
           const newPoints = await contractUtils.calculatePoints(provider, supplyBal, borrowBal)
           setPoints(newPoints)
+          updateWalletPoints(account, newPoints)
           console.log('Points updated after repay:', newPoints)
         } catch (err) {
           console.error('Error updating points after repay:', err)
@@ -799,17 +1154,29 @@ function App() {
             <div className="stats-column">
               <div className="stat-item glass">
                 <div className="stat-label">Total market size®</div>
-                <div className="stat-value">${((displayState.totals.marketSize * qiePrice) / 1000000).toFixed(1)}M+</div>
+                <div className="stat-value">
+                  {landingStats.marketSize >= 1000000 
+                    ? `${(landingStats.marketSize / 1000000).toFixed(1)}M+ QIE`
+                    : landingStats.marketSize >= 1000
+                    ? `${(landingStats.marketSize / 1000).toFixed(1)}K+ QIE`
+                    : `${landingStats.marketSize.toFixed(0)} QIE`}
+                </div>
               </div>
               <div className="stat-item glass">
                 <div className="stat-label">Total users®</div>
-                <div className="stat-value">1,247</div>
+                <div className="stat-value">{landingStats.totalUsers.toLocaleString()}</div>
               </div>
             </div>
             <div className="stats-column">
               <div className="stat-item glass">
-                <div className="stat-label">Total tx volume®</div>
-                <div className="stat-value">${((displayState.totals.borrow * qiePrice) / 1000000).toFixed(1)}M+</div>
+                <div className="stat-label">Total transactions®</div>
+                <div className="stat-value">
+                  {landingStats.totalTransactions >= 1000000 
+                    ? `${(landingStats.totalTransactions / 1000000).toFixed(1)}M+`
+                    : landingStats.totalTransactions >= 1000
+                    ? `${(landingStats.totalTransactions / 1000).toFixed(1)}K+`
+                    : landingStats.totalTransactions.toLocaleString()}
+                </div>
               </div>
               <div className="stat-item glass">
                 <div className="stat-label">Total chains®</div>
@@ -870,7 +1237,7 @@ function App() {
       <nav className="top-nav dark">
         <div className="logo">QieLend</div>
         <ul className="nav-links">
-          {['dashboard', 'portfolio', 'market', 'points'].map((key) => (
+          {['dashboard', 'portfolio', 'overview', 'market', 'points'].map((key) => (
             <li key={key}>
               <button
                 className={`link ${activePage === key ? 'active' : ''}`}
@@ -951,17 +1318,6 @@ function App() {
                     <p className="subtext">~${((availableToBorrowLive || availableToBorrow || 0) * qiePrice).toFixed(2)}</p>
                   </div>
                   <div className="dashboard-metric-card">
-                    <p className="label">TOTAL BORROW</p>
-                    <h2>{displayState.user.borrowed.toFixed(2)} QIE</h2>
-                    <p className="subtext">~${(displayState.user.borrowed * qiePrice).toFixed(2)}</p>
-                    <div className="progress-small">
-                      <span
-                        className="bar-small"
-                        style={{ width: `${Math.min((displayState.user.borrowed / (displayState.user.supplied || 1)) * 100, 100)}%` }}
-                      />
-                    </div>
-                  </div>
-                  <div className="dashboard-metric-card">
                     <p className="label">WALLET BALANCE</p>
                     <h2>{walletBalance.toFixed(2)} QIE</h2>
                     <p className="subtext">~${(walletBalance * qiePrice).toFixed(2)}</p>
@@ -1017,21 +1373,19 @@ function App() {
                     <div className="section-footer">
                       {collateralEnabled ? (
                         <>
-                          <p>Available to borrow {(availableToBorrowLive || availableToBorrow || 0).toFixed(2)} QIE (~${((availableToBorrowLive || availableToBorrow || 0) * qiePrice).toFixed(2)})</p>
-                          <p>Collateral capacity {collateralMetrics.capacity.toFixed(2)} QIE</p>
-                          <p>Collateral remaining {collateralMetrics.remaining.toFixed(2)} QIE</p>
+                          <p>Available to borrow: <strong>{(availableToBorrowLive || availableToBorrow || 0).toFixed(2)} QIE</strong> (~${((availableToBorrowLive || availableToBorrow || 0) * qiePrice).toFixed(2)})</p>
+                          <p>Collateral remaining: <strong>{collateralMetrics.remaining.toFixed(2)} QIE</strong></p>
                         </>
                       ) : (
                         <p className="liquidation-warning">Enable collateral to borrow</p>
                       )}
-                      <p>Net APR {netApy.toFixed(2)}%</p>
                     </div>
                   </section>
 
                   <section className="dashboard-card summary-card">
                     <div className="card-header">
                       <h3>Borrows</h3>
-                      <div className="summary-pill">Total Borrow {displayState.user.borrowed.toFixed(2)} QIE</div>
+                      <div className="summary-pill">Borrow Balance {displayState.user.borrowed.toFixed(2)} QIE</div>
                     </div>
                     <div className="summary-grid">
                       <div>
@@ -1053,13 +1407,13 @@ function App() {
                       </div>
                     </div>
                     <div className="section-footer">
-                      {liquidationPercentage > 0 && (
+                      {liquidationPercentage > 0 ? (
                         <p className="liquidation-warning">
                           Liquidation risk: {liquidationPercentage.toFixed(1)}% to threshold
                         </p>
+                      ) : (
+                        <p>Risk level: Safe</p>
                       )}
-                      {liquidationPercentage === 0 && <p>Risk level: Safe</p>}
-                      <p>HF target {displayState.user.targetHealth || 1.5}</p>
                     </div>
                   </section>
                 </div>
@@ -1223,37 +1577,133 @@ function App() {
         </div>
       )}
 
-      {activePage === 'market' && (
-        <section className="card">
-          <h2 className="protocol-stats-title">Protocol stats</h2>
-          <div className="market-stats">
-            <div className="market-stat">
-              <p className="label">Total Market Size</p>
-              <h2>${(displayState.totals.marketSize * qiePrice).toLocaleString('en-US', { maximumFractionDigits: 0 })}</h2>
-            </div>
-            <div className="market-stat">
-              <p className="label">Total Supplied</p>
-              <h2>${(displayState.totals.supply * qiePrice).toLocaleString('en-US', { maximumFractionDigits: 0 })}</h2>
-            </div>
-            <div className="market-stat">
-              <p className="label">Total Borrowed</p>
-              <h2>{displayState.totals.borrow.toLocaleString('en-US', { maximumFractionDigits: 4 })} QIE</h2>
-              <p className="subtext" style={{ fontSize: '0.875rem', opacity: 0.7 }}>~${(displayState.totals.borrow * qiePrice).toLocaleString('en-US', { maximumFractionDigits: 0 })}</p>
-            </div>
-            <div className="market-stat">
-              <p className="label">Supply APY</p>
-              <h2>{displayState.totals.supplyApy}%</h2>
-            </div>
-            <div className="market-stat">
-              <p className="label">Borrow APY</p>
-              <h2>{displayState.totals.borrowApy}%</h2>
-            </div>
-            <div className="market-stat">
-              <p className="label">Utilization</p>
-              <h2>{utilization.toFixed(1)}%</h2>
+      {activePage === 'overview' && (
+        <div className="portfolio-layout">
+          <div className="portfolio-summary-card glass">
+            <h3>Protocol Overview</h3>
+            <div className="market-stats">
+              <div className="market-stat">
+                <p className="label">Total Market Size</p>
+                <h2>
+                  {displayState.totals.marketSize >= 1000000 
+                    ? `${(displayState.totals.marketSize / 1000000).toFixed(2)}M QIE`
+                    : displayState.totals.marketSize >= 1000
+                    ? `${(displayState.totals.marketSize / 1000).toFixed(2)}K QIE`
+                    : `${displayState.totals.marketSize.toFixed(2)} QIE`}
+                </h2>
+                <p className="subtext" style={{ fontSize: '0.875rem', opacity: 0.7 }}>
+                  ~${(displayState.totals.marketSize * qiePrice).toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                </p>
+              </div>
+              <div className="market-stat">
+                <p className="label">Total Supplied</p>
+                <h2>
+                  {displayState.totals.supply >= 1000000 
+                    ? `${(displayState.totals.supply / 1000000).toFixed(2)}M QIE`
+                    : displayState.totals.supply >= 1000
+                    ? `${(displayState.totals.supply / 1000).toFixed(2)}K QIE`
+                    : `${displayState.totals.supply.toFixed(2)} QIE`}
+                </h2>
+                <p className="subtext" style={{ fontSize: '0.875rem', opacity: 0.7 }}>
+                  ~${(displayState.totals.supply * qiePrice).toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                </p>
+              </div>
+              <div className="market-stat">
+                <p className="label">Total Borrowed</p>
+                <h2>{displayState.totals.borrow.toLocaleString('en-US', { maximumFractionDigits: 4 })} QIE</h2>
+                <p className="subtext" style={{ fontSize: '0.875rem', opacity: 0.7 }}>~${(displayState.totals.borrow * qiePrice).toLocaleString('en-US', { maximumFractionDigits: 0 })}</p>
+              </div>
+              <div className="market-stat">
+                <p className="label">Utilization</p>
+                <h2>{utilization.toFixed(1)}%</h2>
+              </div>
             </div>
           </div>
-        </section>
+        </div>
+      )}
+
+      {activePage === 'market' && (
+        <div className="portfolio-layout">
+          <div className="portfolio-summary-card glass">
+            <h3>Markets</h3>
+            <div className="markets-table-minimal">
+              <div className="markets-header-minimal">
+                <div className="market-col-minimal asset-col">Asset</div>
+                <div className="market-col-minimal price-col">Price</div>
+                <div className="market-col-minimal apr-col">Supply APR</div>
+                <div className="market-col-minimal apr-col">Borrow APR</div>
+                <div className="market-col-minimal status-col">Status</div>
+              </div>
+              <div className="markets-body-minimal">
+                {/* QIE - Active Market */}
+                <div className="market-row-minimal active">
+                  <div className="market-col-minimal asset-col">
+                    <div className="asset-info-minimal">
+                      <div>
+                        <p className="asset-name-minimal">QIE</p>
+                        <p className="asset-symbol-minimal">QIE Network</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="market-col-minimal price-col">
+                    <strong>${qiePrice.toFixed(4)}</strong>
+                  </div>
+                  <div className="market-col-minimal apr-col">
+                    <strong>{displayState.totals.supplyApy.toFixed(2)}%</strong>
+                  </div>
+                  <div className="market-col-minimal apr-col">
+                    <strong>{displayState.totals.borrowApy.toFixed(2)}%</strong>
+                  </div>
+                  <div className="market-col-minimal status-col">
+                    <span className="status-badge-minimal active">Active</span>
+                  </div>
+                </div>
+
+                {/* Coming Soon Markets */}
+                {[
+                  { symbol: 'SOL', name: 'Solana', supplyApr: 4.5, borrowApr: 7.2 },
+                  { symbol: 'ETH', name: 'Ethereum', supplyApr: 3.8, borrowApr: 6.5 },
+                  { symbol: 'BTC', name: 'Bitcoin', supplyApr: 2.5, borrowApr: 5.8 },
+                  { symbol: 'XRP', name: 'Ripple', supplyApr: 4.2, borrowApr: 7.0 },
+                  { symbol: 'BNB', name: 'Binance Coin', supplyApr: 4.0, borrowApr: 6.8 },
+                ].map((asset) => {
+                  const livePrice = tokenPrices[asset.symbol]
+                  const fallbackPrice = asset.symbol === 'SOL' ? 150.25 : asset.symbol === 'ETH' ? 2450.80 : asset.symbol === 'BTC' ? 43250.00 : asset.symbol === 'XRP' ? 0.62 : 315.50
+                  const displayPrice = livePrice !== null && livePrice !== undefined ? livePrice : fallbackPrice
+                  
+                  return (
+                    <div key={asset.symbol} className="market-row-minimal coming-soon">
+                      <div className="market-col-minimal asset-col">
+                        <div className="asset-info-minimal">
+                          <div>
+                            <p className="asset-name-minimal">{asset.name}</p>
+                            <p className="asset-symbol-minimal">{asset.symbol}</p>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="market-col-minimal price-col">
+                        <strong>
+                          {livePrice !== null && livePrice !== undefined 
+                            ? `$${displayPrice.toLocaleString('en-US', { maximumFractionDigits: 2, minimumFractionDigits: 2 })}`
+                            : `$${displayPrice.toLocaleString('en-US', { maximumFractionDigits: 2, minimumFractionDigits: 2 })}`}
+                        </strong>
+                      </div>
+                      <div className="market-col-minimal apr-col">
+                        <strong>{asset.supplyApr.toFixed(2)}%</strong>
+                      </div>
+                      <div className="market-col-minimal apr-col">
+                        <strong>{asset.borrowApr.toFixed(2)}%</strong>
+                      </div>
+                      <div className="market-col-minimal status-col">
+                        <span className="status-badge-minimal coming-soon">Coming Soon</span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {activePage === 'portfolio' && (
@@ -1399,4 +1849,5 @@ function App() {
 }
 
 export default App
+
 
