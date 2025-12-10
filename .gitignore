@@ -45,3 +45,5 @@ typechain-types
 *secret*
 scripts/deploy-simple.js
 scripts/deploy-contract.js
+
+.vercel
