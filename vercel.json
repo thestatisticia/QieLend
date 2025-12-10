@@ -2,8 +2,9 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "devCommand": "npm run dev",
-  "installCommand": "npm install",
+  "installCommand": "npm install --production=false",
   "framework": "vite",
+  "nodeVersion": "20.x",
   "rewrites": [
     {
       "source": "/(.*)",

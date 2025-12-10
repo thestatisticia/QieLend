@@ -10,16 +10,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@nomicfoundation/hardhat-viem": "^3.0.1",
     "ethers": "^6.16.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "solc": "^0.8.31",
-    "viem": "^2.41.2"
+    "react-dom": "^19.2.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
     "@nomicfoundation/hardhat-toolbox": "^3.0.0",
+    "@nomicfoundation/hardhat-viem": "^3.0.1",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
     "@vitejs/plugin-react": "^5.1.0",
@@ -29,6 +27,8 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "hardhat": "^3.0.17",
-    "vite": "^7.2.2"
+    "solc": "^0.8.31",
+    "vite": "^7.2.2",
+    "viem": "^2.41.2"
   }
 }
