@@ -97,13 +97,22 @@ const saveLeaderboardToStorage = (leaderboard) => {
 }
 
 const initializeWalletInLeaderboard = (address) => {
-  if (!address) return
-  const leaderboard = getLeaderboardFromStorage()
-  const normalizedAddress = address.toLowerCase()
-  if (!leaderboard[normalizedAddress]) {
-    leaderboard[normalizedAddress] = { address: normalizedAddress, points: 0 }
-    saveLeaderboardToStorage(leaderboard)
-    console.log('Initialized wallet in leaderboard with 0 points:', normalizedAddress)
+  if (!address) {
+    console.warn('initializeWalletInLeaderboard called with no address')
+    return
+  }
+  try {
+    const leaderboard = getLeaderboardFromStorage()
+    const normalizedAddress = address.toLowerCase()
+    if (!leaderboard[normalizedAddress]) {
+      leaderboard[normalizedAddress] = { address: normalizedAddress, points: 0 }
+      saveLeaderboardToStorage(leaderboard)
+      console.log('Initialized wallet in leaderboard with 0 points:', normalizedAddress)
+    } else {
+      console.log('Wallet already in leaderboard:', normalizedAddress)
+    }
+  } catch (error) {
+    console.error('Error initializing wallet in leaderboard:', error)
   }
 }
 
@@ -240,7 +249,7 @@ function App() {
             setAccount(autoConnectedAccount)
             // Initialize wallet in leaderboard if not already present
             initializeWalletInLeaderboard(autoConnectedAccount)
-            setWallet('metamask')
+          setWallet('metamask')
             
             // Fetch data after auto-connect
             if (CONTRACT_ADDRESS !== '0x0000000000000000000000000000000000000000') {
@@ -257,10 +266,38 @@ function App() {
     }
   }, [])
 
-  // Fetch contract data when account is connected
+  // Fetch contract data when account is connected, or fetch protocol totals for overview
   useEffect(() => {
     if (account && provider && CONTRACT_ADDRESS !== '0x0000000000000000000000000000000000000000') {
       fetchContractData()
+    } else if (CONTRACT_ADDRESS !== '0x0000000000000000000000000000000000000000') {
+      // Even without account, fetch protocol totals for overview page
+      const fetchProtocolTotals = async () => {
+        try {
+          const rpcProvider = new ethers.JsonRpcProvider('https://rpc1mainnet.qie.digital/')
+          const protocolTotals = await contractUtils.getProtocolTotals(rpcProvider)
+          const [supplyAPY, borrowAPY] = await Promise.all([
+            contractUtils.getSupplyAPY(rpcProvider).catch(() => 0),
+            contractUtils.getBorrowAPY(rpcProvider).catch(() => 0),
+          ])
+          
+          setContractData(prev => ({
+            ...prev,
+            totals: {
+              supply: protocolTotals.supply || 0,
+              borrow: protocolTotals.borrow || 0,
+              supplyApy: supplyAPY || 0,
+              borrowApy: borrowAPY || 0,
+              reserveFactor: protocolTotals.reserveFactor || 0,
+              cap: protocolTotals.cap || 0,
+              marketSize: protocolTotals.supply || 0,
+            }
+          }))
+        } catch (error) {
+          console.error('Error fetching protocol totals for overview:', error)
+        }
+      }
+      fetchProtocolTotals()
     }
   }, [account, provider])
 
@@ -409,7 +446,32 @@ function App() {
       await fetchWalletBalance()
     } catch (error) {
       console.error('Error fetching contract data:', error)
-      // Keep using mock data on error
+      // Even on error, try to fetch at least protocol totals for overview
+      try {
+        const rpcProvider = new ethers.JsonRpcProvider('https://rpc1mainnet.qie.digital/')
+        if (CONTRACT_ADDRESS !== '0x0000000000000000000000000000000000000000') {
+          const protocolTotals = await contractUtils.getProtocolTotals(rpcProvider)
+          const [supplyAPY, borrowAPY] = await Promise.all([
+            contractUtils.getSupplyAPY(rpcProvider).catch(() => 0),
+            contractUtils.getBorrowAPY(rpcProvider).catch(() => 0),
+          ])
+          
+          setContractData(prev => ({
+            ...prev,
+            totals: {
+              supply: protocolTotals.supply || 0,
+              borrow: protocolTotals.borrow || 0,
+              supplyApy: supplyAPY || 0,
+              borrowApy: borrowAPY || 0,
+              reserveFactor: protocolTotals.reserveFactor || 0,
+              cap: protocolTotals.cap || 0,
+              marketSize: protocolTotals.supply || 0,
+            }
+          }))
+        }
+      } catch (fallbackError) {
+        console.error('Error in fallback contract data fetch:', fallbackError)
+      }
     } finally {
       setIsLoadingContract(false)
     }
@@ -418,17 +480,19 @@ function App() {
   // Fetch landing page stats from contract
   useEffect(() => {
     const fetchLandingStats = async () => {
+      // Always get leaderboard and transaction count (works even without contract)
+      const totalTransactions = getTransactionCount()
+      const leaderboard = getLeaderboardFromStorage()
+      const totalUsers = Math.max(Object.keys(leaderboard).length, 1)
+      
       if (CONTRACT_ADDRESS === '0x0000000000000000000000000000000000000000') {
         console.warn('Contract address not configured:', CONTRACT_ADDRESS)
-        // Still show transaction count and users even if contract not configured
-        const totalTransactions = getTransactionCount()
-        const leaderboard = getLeaderboardFromStorage()
-        const totalUsers = Object.keys(leaderboard).length || 1
-        setLandingStats(prev => ({
-          ...prev,
+        setLandingStats({
+          marketSize: 0,
+          totalVolume: 0,
           totalUsers: totalUsers,
           totalTransactions: totalTransactions
-        }))
+        })
         return
       }
       
@@ -440,48 +504,50 @@ function App() {
         // Check if contract has code
         const code = await rpcProvider.getCode(CONTRACT_ADDRESS)
         if (!code || code === '0x' || code === '0x0') {
-          console.error('Contract has no code at address:', CONTRACT_ADDRESS)
-          throw new Error('Contract not deployed at this address')
+          console.warn('Contract has no code at address:', CONTRACT_ADDRESS, '- Using fallback stats')
+          setLandingStats({
+            marketSize: 0,
+            totalVolume: 0,
+            totalUsers: totalUsers,
+            totalTransactions: totalTransactions
+          })
+          return
         }
         
         const protocolTotals = await contractUtils.getProtocolTotals(rpcProvider)
         console.log('Protocol totals fetched:', protocolTotals)
         
-        // Count unique users from leaderboard
-        const leaderboard = getLeaderboardFromStorage()
-        const totalUsers = Object.keys(leaderboard).length || 1
-        
-        // Get transaction count from localStorage (actual number of transactions)
-        const totalTransactions = getTransactionCount()
+        const marketSize = protocolTotals.supply || 0
+        const totalVolume = protocolTotals.borrow || 0
         
         console.log('Setting landing stats:', {
-          marketSize: protocolTotals.supply || 0,
-          totalTransactions,
-          totalUsers
+          marketSize,
+          totalVolume,
+          totalUsers,
+          totalTransactions
         })
         
         setLandingStats({
-          marketSize: protocolTotals.supply || 0,
-          totalVolume: protocolTotals.borrow || 0,
+          marketSize: marketSize,
+          totalVolume: totalVolume,
           totalUsers: totalUsers,
           totalTransactions: totalTransactions
         })
       } catch (error) {
         console.error('Error fetching landing stats:', error)
-        // Keep default values on error, but still show transaction count and users
-        const totalTransactions = getTransactionCount()
-        const leaderboard = getLeaderboardFromStorage()
-        const totalUsers = Object.keys(leaderboard).length || 1
-        setLandingStats(prev => ({
-          ...prev,
+        // On error, still show user count and transaction count
+        setLandingStats({
+          marketSize: 0,
+          totalVolume: 0,
           totalUsers: totalUsers,
           totalTransactions: totalTransactions
-        }))
+        })
       }
     }
     
+    // Fetch immediately
     fetchLandingStats()
-    // Refresh stats every 30 seconds (more frequent for debugging)
+    // Refresh stats every 30 seconds
     const interval = setInterval(fetchLandingStats, 30000)
     return () => clearInterval(interval)
   }, [])
@@ -586,22 +652,22 @@ function App() {
       return
     }
 
-    setIsConnecting(true)
-    try {
+      setIsConnecting(true)
+      try {
       const newProvider = new ethers.BrowserProvider(qie)
       setProvider(newProvider)
       const accounts = await qie.request({ method: 'eth_requestAccounts' })
       const connectedAccount = accounts[0]
       setAccount(connectedAccount)
-      setWallet('qiewallet')
-      setShowWalletMenu(false)
+        setWallet('qiewallet')
+        setShowWalletMenu(false)
       // Initialize wallet in leaderboard with 0 points
       initializeWalletInLeaderboard(connectedAccount)
-    } catch (error) {
-      console.error('Error connecting QIE Wallet:', error)
-      alert('Failed to connect QIE Wallet. Please try again.')
-    } finally {
-      setIsConnecting(false)
+      } catch (error) {
+        console.error('Error connecting QIE Wallet:', error)
+        alert('Failed to connect QIE Wallet. Please try again.')
+      } finally {
+        setIsConnecting(false)
     }
   }
 
@@ -718,26 +784,26 @@ function App() {
 
   // Update displayed values to use contract data when available
   const displayState = useMemo(() => {
+    const defaultUserState = { supplied: 0, borrowed: 0, healthFactor: 1.5, targetHealth: 1.5, balance: 0 }
+    
     const userStateRaw =
-      account && contractData
+      account && contractData && contractData.user
         ? contractData.user
-        : { supplied: 0, borrowed: 0, healthFactor: 1.5, targetHealth: 1.5, balance: 0 }
+        : defaultUserState
 
-    const hasPositions = (userStateRaw.supplied || 0) > 0 || (userStateRaw.borrowed || 0) > 0
+    const hasPositions = (userStateRaw?.supplied || 0) > 0 || (userStateRaw?.borrowed || 0) > 0
     const userState = {
+      ...defaultUserState,
       ...userStateRaw,
-      healthFactor: hasPositions ? userStateRaw.healthFactor || 1.5 : 1.5,
+      healthFactor: hasPositions ? (userStateRaw?.healthFactor || 1.5) : 1.5,
     }
 
     const totalsState = contractData?.totals || mockState.totals
 
-    if (contractData) {
       return {
-        totals: totalsState,
-        user: userState,
-      }
+      totals: totalsState || mockState.totals,
+      user: userState,
     }
-    return { totals: totalsState, user: userState }
   }, [account, contractData])
 
   const collateralMetrics = useMemo(() => {
@@ -1305,273 +1371,273 @@ function App() {
             </div>
           ) : (
             <>
-              <div className="dashboard-main-new">
-                <div className="dashboard-top-cards">
-                  <div className="dashboard-metric-card">
-                    <p className="label">MY SUPPLY BALANCE</p>
+          <div className="dashboard-main-new">
+            <div className="dashboard-top-cards">
+              <div className="dashboard-metric-card">
+                <p className="label">MY SUPPLY BALANCE</p>
                     <h2>{displayState.user.supplied.toFixed(2)} QIE</h2>
                     <p className="subtext">~${(displayState.user.supplied * qiePrice).toFixed(2)} • NET APR {netApy.toFixed(2)}%</p>
-                  </div>
-                  <div className="dashboard-metric-card">
-                    <p className="label">AVAILABLE TO BORROW</p>
+              </div>
+              <div className="dashboard-metric-card">
+                <p className="label">AVAILABLE TO BORROW</p>
                     <h2>{(availableToBorrowLive || availableToBorrow || 0).toFixed(2)} QIE</h2>
                     <p className="subtext">~${((availableToBorrowLive || availableToBorrow || 0) * qiePrice).toFixed(2)}</p>
-                  </div>
-                  <div className="dashboard-metric-card">
+              </div>
+              <div className="dashboard-metric-card">
                     <p className="label">WALLET BALANCE</p>
                     <h2>{walletBalance.toFixed(2)} QIE</h2>
                     <p className="subtext">~${(walletBalance * qiePrice).toFixed(2)}</p>
-                  </div>
-                  <div className="dashboard-metric-card health-factor-card">
-                    <p className="label">HEALTH FACTOR</p>
+              </div>
+              <div className="dashboard-metric-card health-factor-card">
+                <p className="label">HEALTH FACTOR</p>
                     <h2>{displayedHealthFactor.toFixed(1)}</h2>
-                    <div className="health-progress">
-                      <span
-                        className="health-bar"
+                <div className="health-progress">
+                  <span
+                    className="health-bar"
                         style={{ width: `${Math.min((displayedHealthFactor / 3) * 100, 100)}%` }}
-                      />
-                    </div>
-                  </div>
+                  />
                 </div>
+              </div>
+        </div>
 
-                <div className="dashboard-summary-two">
-                  <section className="dashboard-card summary-card">
-                    <div className="card-header">
-                      <h3>Supplies</h3>
+            <div className="dashboard-summary-two">
+              <section className="dashboard-card summary-card">
+                <div className="card-header">
+                  <h3>Supplies</h3>
                       <div className="summary-pill">Supply Balance {displayState.user.supplied.toFixed(2)} QIE</div>
                       <div className="summary-pill">
                         Collateral room {collateralEnabled ? `${collateralMetrics.remaining.toFixed(2)} QIE` : '0.00 QIE'}
                       </div>
-                    </div>
-                    <div className="summary-grid">
-                      <div>
-                        <p className="label">Token</p>
-                        <p className="asset-name">QIE</p>
-                      </div>
-                      <div>
-                        <p className="label">APR</p>
-                        <p className="asset-apr">{displayState.totals.supplyApy}%</p>
-                      </div>
-                      <div>
-                        <p className="label">Balance</p>
+                </div>
+                <div className="summary-grid">
+                  <div>
+                    <p className="label">Token</p>
+                    <p className="asset-name">QIE</p>
+                  </div>
+                  <div>
+                    <p className="label">APR</p>
+                    <p className="asset-apr">{displayState.totals.supplyApy}%</p>
+                  </div>
+                  <div>
+                    <p className="label">Balance</p>
                         <p className="asset-apr">{displayState.user.supplied.toFixed(2)} QIE</p>
                         <p className="subtext" style={{ fontSize: '0.75rem', opacity: 0.7 }}>~${(displayState.user.supplied * qiePrice).toFixed(2)}</p>
-                      </div>
-                      <div>
-                        <p className="label">Collateral</p>
-                        <label className="collateral-switch">
-                          <input
-                            type="checkbox"
-                            checked={collateralEnabled}
-                            onChange={(e) => handleToggleCollateral(e.target.checked)}
-                            disabled={!account || !provider}
-                          />
-                          <span className="switch-slider"></span>
-                        </label>
-                      </div>
-                    </div>
-                    <div className="section-footer">
-                      {collateralEnabled ? (
+          </div>
+                  <div>
+                    <p className="label">Collateral</p>
+                    <label className="collateral-switch">
+                      <input
+                        type="checkbox"
+                        checked={collateralEnabled}
+                        onChange={(e) => handleToggleCollateral(e.target.checked)}
+                        disabled={!account || !provider}
+                      />
+                      <span className="switch-slider"></span>
+                    </label>
+                  </div>
+                </div>
+                <div className="section-footer">
+                  {collateralEnabled ? (
                         <>
                           <p>Available to borrow: <strong>{(availableToBorrowLive || availableToBorrow || 0).toFixed(2)} QIE</strong> (~${((availableToBorrowLive || availableToBorrow || 0) * qiePrice).toFixed(2)})</p>
                           <p>Collateral remaining: <strong>{collateralMetrics.remaining.toFixed(2)} QIE</strong></p>
                         </>
-                      ) : (
-                        <p className="liquidation-warning">Enable collateral to borrow</p>
-                      )}
-                    </div>
-                  </section>
+                  ) : (
+                    <p className="liquidation-warning">Enable collateral to borrow</p>
+                  )}
+                </div>
+        </section>
 
-                  <section className="dashboard-card summary-card">
-                    <div className="card-header">
-                      <h3>Borrows</h3>
+              <section className="dashboard-card summary-card">
+                <div className="card-header">
+                  <h3>Borrows</h3>
                       <div className="summary-pill">Borrow Balance {displayState.user.borrowed.toFixed(2)} QIE</div>
-                    </div>
-                    <div className="summary-grid">
-                      <div>
-                        <p className="label">Token</p>
-                        <p className="asset-name">QIE</p>
-                      </div>
-                      <div>
-                        <p className="label">APR</p>
-                        <p className="asset-apr">{displayState.totals.borrowApy}%</p>
-                      </div>
-                      <div>
-                        <p className="label">Balance</p>
+                </div>
+                <div className="summary-grid">
+                  <div>
+                    <p className="label">Token</p>
+                    <p className="asset-name">QIE</p>
+                  </div>
+                  <div>
+                    <p className="label">APR</p>
+                    <p className="asset-apr">{displayState.totals.borrowApy}%</p>
+          </div>
+            <div>
+                    <p className="label">Balance</p>
                         <p className="asset-apr">{displayState.user.borrowed.toFixed(2)} QIE</p>
                         <p className="subtext" style={{ fontSize: '0.75rem', opacity: 0.7 }}>~${(displayState.user.borrowed * qiePrice).toFixed(2)}</p>
-                      </div>
-                      <div>
-                        <p className="label">Health</p>
+            </div>
+            <div>
+                    <p className="label">Health</p>
                         <p className="asset-apr">{displayedHealthFactor.toFixed(1)}</p>
-                      </div>
-                    </div>
-                    <div className="section-footer">
+                  </div>
+                </div>
+                <div className="section-footer">
                       {liquidationPercentage > 0 ? (
-                        <p className="liquidation-warning">
-                          Liquidation risk: {liquidationPercentage.toFixed(1)}% to threshold
-                        </p>
+                    <p className="liquidation-warning">
+                      Liquidation risk: {liquidationPercentage.toFixed(1)}% to threshold
+                    </p>
                       ) : (
                         <p>Risk level: Safe</p>
-                      )}
-                    </div>
-                  </section>
+                  )}
                 </div>
+              </section>
+            </div>
 
-                {account && (
-                  <div className="rewards-section">
-                    <div className="dashboard-card rewards-card">
-                      <div className="rewards-header">
-                        <h3>Rewards</h3>
+            {account && (
+              <div className="rewards-section">
+                <div className="dashboard-card rewards-card">
+                  <div className="rewards-header">
+                    <h3>Rewards</h3>
                         <button
                           className="claim-btn"
                           onClick={claimRewards}
                           disabled={rewards === 0 || !contractData?.user?.supplied}
                         >
-                          Claim
-                        </button>
-                      </div>
-                      <div className="rewards-amount">
-                        <p className="label">Accumulating</p>
-                        <h2>{rewards.toFixed(2)} QIE</h2>
-                        <p className="rewards-hint">APR earnings accumulate in real-time based on your supplied assets ({displayState.totals.supplyApy}% APY)</p>
-                      </div>
-                    </div>
+                      Claim
+                    </button>
                   </div>
-                )}
+                  <div className="rewards-amount">
+                    <p className="label">Accumulating</p>
+                        <h2>{rewards.toFixed(2)} QIE</h2>
+                    <p className="rewards-hint">APR earnings accumulate in real-time based on your supplied assets ({displayState.totals.supplyApy}% APY)</p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="dashboard-sidebar">
+            <div className="action-tabs">
+              {['supply', 'withdraw', 'borrow', 'repay'].map((action) => (
+                <button
+                  key={action}
+                  className={`action-tab ${activeAction === action ? 'active' : ''}`}
+                  onClick={() => setActiveAction(action)}
+                >
+                  {action.charAt(0).toUpperCase() + action.slice(1)}
+                </button>
+              ))}
+          </div>
+
+            <div className="action-content">
+              <div className="amount-input">
+                    <input
+                  type="number"
+                  placeholder="0.00"
+                  value={
+                    activeAction === 'supply'
+                      ? supplyAmount
+                      : activeAction === 'withdraw'
+                        ? withdrawAmount
+                        : activeAction === 'borrow'
+                          ? borrowAmount
+                          : repayAmount
+                  }
+                  onChange={(e) => {
+                    const val = e.target.value
+                    if (activeAction === 'supply') setSupplyAmount(val)
+                    else if (activeAction === 'withdraw') setWithdrawAmount(val)
+                    else if (activeAction === 'borrow') setBorrowAmount(val)
+                    else setRepayAmount(val)
+                  }}
+                />
+                <p className="muted">QIE</p>
               </div>
 
-              <div className="dashboard-sidebar">
-                <div className="action-tabs">
-                  {['supply', 'withdraw', 'borrow', 'repay'].map((action) => (
-                    <button
-                      key={action}
-                      className={`action-tab ${activeAction === action ? 'active' : ''}`}
-                      onClick={() => setActiveAction(action)}
-                    >
-                      {action.charAt(0).toUpperCase() + action.slice(1)}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="action-content">
-                  <div className="amount-input">
-                    <input
-                      type="number"
-                      placeholder="0.00"
-                      value={
+              <div className="percent-buttons">
+                {[25, 50, 75, 100].map((pct) => (
+                  <button
+                    key={pct}
+                    className="percent-btn"
+                    onClick={() => {
+                      const max =
                         activeAction === 'supply'
-                          ? supplyAmount
-                          : activeAction === 'withdraw'
-                            ? withdrawAmount
-                            : activeAction === 'borrow'
-                              ? borrowAmount
-                              : repayAmount
-                      }
-                      onChange={(e) => {
-                        const val = e.target.value
-                        if (activeAction === 'supply') setSupplyAmount(val)
-                        else if (activeAction === 'withdraw') setWithdrawAmount(val)
-                        else if (activeAction === 'borrow') setBorrowAmount(val)
-                        else setRepayAmount(val)
-                      }}
-                    />
-                    <p className="muted">QIE</p>
-                  </div>
-
-                  <div className="percent-buttons">
-                    {[25, 50, 75, 100].map((pct) => (
-                      <button
-                        key={pct}
-                        className="percent-btn"
-                        onClick={() => {
-                          const max =
-                            activeAction === 'supply'
                               ? walletBalance
-                              : activeAction === 'withdraw'
-                                ? displayState.user.supplied
-                                : activeAction === 'borrow'
-                                  ? availableToBorrow
-                                  : displayState.user.borrowed
-                          const val = (max * pct) / 100
-                          if (activeAction === 'supply') setSupplyAmount(val.toString())
-                          else if (activeAction === 'withdraw') setWithdrawAmount(val.toString())
-                          else if (activeAction === 'borrow') setBorrowAmount(val.toString())
-                          else setRepayAmount(val.toString())
-                        }}
-                      >
-                        {pct}%
-                      </button>
-                    ))}
-                  </div>
+                          : activeAction === 'withdraw'
+                            ? displayState.user.supplied
+                            : activeAction === 'borrow'
+                              ? availableToBorrow
+                              : displayState.user.borrowed
+                      const val = (max * pct) / 100
+                      if (activeAction === 'supply') setSupplyAmount(val.toString())
+                      else if (activeAction === 'withdraw') setWithdrawAmount(val.toString())
+                      else if (activeAction === 'borrow') setBorrowAmount(val.toString())
+                      else setRepayAmount(val.toString())
+                    }}
+                  >
+                    {pct}%
+                  </button>
+                ))}
+              </div>
 
-                  <div className="asset-selector">
+              <div className="asset-selector">
                     <span>
                       {activeAction === 'supply' ? 'Supply' : 
                        activeAction === 'withdraw' ? 'Withdraw' : 
                        activeAction === 'borrow' ? 'Borrow' : 
                        'Repay'} QIE
                     </span>
-                  </div>
+              </div>
 
-                  <div className="health-preview">
-                    <p className="label">Health Factor</p>
+              <div className="health-preview">
+                <p className="label">Health Factor</p>
                     <p className="health-value">
                       {displayedHealthFactor.toFixed(1)} → {displayedHealthFactor.toFixed(1)}
                     </p>
-                  </div>
+            </div>
 
-                  <button
-                    className="primary wide action-btn" 
-                    disabled={
-                      !account || 
-                      (activeAction === 'borrow' && (!collateralEnabled || availableToBorrow <= 0))
-                    }
-                    onClick={() => {
-                      if (activeAction === 'supply') handleSupply()
-                      else if (activeAction === 'withdraw') handleWithdraw()
-                      else if (activeAction === 'borrow') handleBorrow()
-                      else handleRepay()
-                    }}
-                  >
-                    {activeAction === 'supply'
-                      ? 'Deposit'
-                      : activeAction === 'withdraw'
-                        ? 'Withdraw'
-                        : activeAction === 'borrow'
-                          ? 'Borrow'
-                          : 'Repay'}
-                  </button>
+          <button
+                className="primary wide action-btn" 
+                disabled={
+                  !account || 
+                  (activeAction === 'borrow' && (!collateralEnabled || availableToBorrow <= 0))
+                }
+                onClick={() => {
+                  if (activeAction === 'supply') handleSupply()
+                  else if (activeAction === 'withdraw') handleWithdraw()
+                  else if (activeAction === 'borrow') handleBorrow()
+                  else handleRepay()
+                }}
+              >
+                {activeAction === 'supply'
+                  ? 'Deposit'
+                  : activeAction === 'withdraw'
+                    ? 'Withdraw'
+                    : activeAction === 'borrow'
+                      ? 'Borrow'
+                      : 'Repay'}
+          </button>
 
-                  <div className="action-details">
-                    <div className="detail-row">
-                      <span>Balance QIE</span>
+              <div className="action-details">
+                <div className="detail-row">
+                  <span>Balance QIE</span>
                   <strong>{format(walletBalance)}</strong>
-                    </div>
-                    <div className="detail-row">
-                      <span>
-                        {activeAction === 'supply' || activeAction === 'withdraw' ? 'Supply' : 'Borrow'} APR
-                      </span>
-                      <strong>
-                        {activeAction === 'supply' || activeAction === 'withdraw'
-                          ? displayState.totals.supplyApy
-                          : displayState.totals.borrowApy}
-                        %
-                      </strong>
-                    </div>
-                    <div className="detail-row">
-                      <span>
-                        {activeAction === 'supply' || activeAction === 'withdraw' ? 'Supply' : 'Borrow'} Balance
-                      </span>
-                      <strong>
-                        {activeAction === 'supply' || activeAction === 'withdraw'
-                          ? format(displayState.user.supplied)
-                          : format(displayState.user.borrowed)}
-                      </strong>
-                    </div>
-                  </div>
+                </div>
+                <div className="detail-row">
+                  <span>
+                    {activeAction === 'supply' || activeAction === 'withdraw' ? 'Supply' : 'Borrow'} APR
+                  </span>
+                  <strong>
+                    {activeAction === 'supply' || activeAction === 'withdraw'
+                      ? displayState.totals.supplyApy
+                      : displayState.totals.borrowApy}
+                    %
+                  </strong>
+                </div>
+                <div className="detail-row">
+                  <span>
+                    {activeAction === 'supply' || activeAction === 'withdraw' ? 'Supply' : 'Borrow'} Balance
+                  </span>
+                  <strong>
+                    {activeAction === 'supply' || activeAction === 'withdraw'
+                      ? format(displayState.user.supplied)
+                      : format(displayState.user.borrowed)}
+                  </strong>
                 </div>
               </div>
+            </div>
+          </div>
             </>
           )}
         </div>
@@ -1581,9 +1647,9 @@ function App() {
         <div className="portfolio-layout">
           <div className="portfolio-summary-card glass">
             <h3>Protocol Overview</h3>
-            <div className="market-stats">
-              <div className="market-stat">
-                <p className="label">Total Market Size</p>
+          <div className="market-stats">
+            <div className="market-stat">
+              <p className="label">Total Market Size</p>
                 <h2>
                   {displayState.totals.marketSize >= 1000000 
                     ? `${(displayState.totals.marketSize / 1000000).toFixed(2)}M QIE`
@@ -1594,9 +1660,9 @@ function App() {
                 <p className="subtext" style={{ fontSize: '0.875rem', opacity: 0.7 }}>
                   ~${(displayState.totals.marketSize * qiePrice).toLocaleString('en-US', { maximumFractionDigits: 0 })}
                 </p>
-              </div>
-              <div className="market-stat">
-                <p className="label">Total Supplied</p>
+            </div>
+            <div className="market-stat">
+              <p className="label">Total Supplied</p>
                 <h2>
                   {displayState.totals.supply >= 1000000 
                     ? `${(displayState.totals.supply / 1000000).toFixed(2)}M QIE`
@@ -1607,17 +1673,17 @@ function App() {
                 <p className="subtext" style={{ fontSize: '0.875rem', opacity: 0.7 }}>
                   ~${(displayState.totals.supply * qiePrice).toLocaleString('en-US', { maximumFractionDigits: 0 })}
                 </p>
-              </div>
-              <div className="market-stat">
-                <p className="label">Total Borrowed</p>
+            </div>
+            <div className="market-stat">
+              <p className="label">Total Borrowed</p>
                 <h2>{displayState.totals.borrow.toLocaleString('en-US', { maximumFractionDigits: 4 })} QIE</h2>
                 <p className="subtext" style={{ fontSize: '0.875rem', opacity: 0.7 }}>~${(displayState.totals.borrow * qiePrice).toLocaleString('en-US', { maximumFractionDigits: 0 })}</p>
-              </div>
-              <div className="market-stat">
-                <p className="label">Utilization</p>
-                <h2>{utilization.toFixed(1)}%</h2>
-              </div>
             </div>
+            <div className="market-stat">
+              <p className="label">Utilization</p>
+              <h2>{utilization.toFixed(1)}%</h2>
+            </div>
+          </div>
           </div>
         </div>
       )}
