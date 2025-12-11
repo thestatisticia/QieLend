@@ -26,9 +26,9 @@ if (typeof window !== 'undefined') {
   console.log('Contract Address:', CONTRACT_ADDRESS)
   console.log('Points Contract Address:', POINTS_CONTRACT_ADDRESS)
   if (CONTRACT_ADDRESS === '0x0000000000000000000000000000000000000000') {
-    console.error('⚠️ CONTRACT ADDRESS NOT CONFIGURED!')
-    console.error('Please set VITE_QIE_CONTRACT_ADDRESS in Vercel environment variables.')
-    console.error('See VERCEL_ENV_SETUP.md for instructions.')
+    console.warn('⚠️ Contract address not configured in environment variables.')
+    console.warn('If this is a Vercel deployment, set VITE_QIE_CONTRACT_ADDRESS in Vercel project settings.')
+    console.warn('See VERCEL_ENV_SETUP.md for instructions.')
   }
 }
 
@@ -1214,27 +1214,6 @@ function App() {
   if (activePage === 'landing') {
   return (
       <div className="app-container landing-page dark-theme">
-        {CONTRACT_ADDRESS === '0x0000000000000000000000000000000000000000' && (
-          <div style={{
-            position: 'fixed',
-            top: '20px',
-            right: '20px',
-            background: 'rgba(255, 170, 0, 0.15)',
-            border: '1px solid rgba(255, 170, 0, 0.3)',
-            color: '#ffaa00',
-            padding: '16px 20px',
-            borderRadius: '12px',
-            zIndex: 10000,
-            maxWidth: '400px',
-            fontSize: '0.9rem',
-            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)'
-          }}>
-            <strong>⚠️ Configuration Required</strong>
-            <p style={{ margin: '8px 0 0', opacity: 0.9, fontSize: '0.85rem' }}>
-              Contract address not configured. Please set <code style={{ background: 'rgba(0,0,0,0.2)', padding: '2px 6px', borderRadius: '4px' }}>VITE_QIE_CONTRACT_ADDRESS</code> in Vercel environment variables.
-            </p>
-          </div>
-        )}
         <nav className="top-nav dark glass">
           <div className="logo">QieLend</div>
           <button className="launch-btn glass" onClick={() => navigate('dashboard')}>
